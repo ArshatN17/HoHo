@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if the user is the author of a document
+    function isAuthor(resource) {
+      return isAuthenticated() && resource.data.authorId == request.auth.uid;
+    }
+    
+    // Check if the user is the author of a comment
+    function isCommentAuthor() {
+      return isAuthenticated() && resource.data.authorId == request.auth.uid;
+    }
+    
+    // Check if the user is the creator of an event
+    function isEventCreator(eventId) {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/events/$(eventId)).data.creatorId == request.auth.uid;
+    }
+    
+    // Check if the user is an admin
+    function isAdmin() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Users collection rules
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && (request.auth.uid == userId || 
+                      (isAdmin() && 
+                        // Only allow admins to update specific fields
+                        (request.resource.data.diff(resource.data).affectedKeys()
+                          .hasOnly(['role', 'lastActive', 'photoURL', 'displayName', 'bio'])
+                        )
+                      ));
+      allow delete: if isAdmin();
+    }
+    
+    // Events collection rules
+    match /events/{eventId} {
+      allow read: if resource.data.isPublic == true || 
+                    (isAuthenticated() && (
+                      resource.data.creatorId == request.auth.uid ||
+                      resource.data.attendees.hasAny([request.auth.uid]) ||
+                      isAdmin()
+                    ));
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+                      resource.data.creatorId == request.auth.uid ||
+                      isAdmin()
+                    );
+      allow delete: if isAuthenticated() && (
+                      resource.data.creatorId == request.auth.uid ||
+                      isAdmin()
+                    );
+    }
+    
+    // Comments collection rules
+    match /comments/{commentId} {
+      // Anyone can read comments
+      allow read: if true;
+      
+      // Only authenticated users can create comments
+      allow create: if isAuthenticated() && 
+                      request.resource.data.authorId == request.auth.uid;
+      
+      // Users can only update their own comments
+      allow update: if isCommentAuthor() || isAdmin();
+      
+      // Users can delete their own comments, event creators can delete any comment on their events,
+      // and admins can delete any comment
+      allow delete: if isCommentAuthor() || 
+                      isEventCreator(resource.data.eventId) ||
+                      isAdmin();
+    }
+    
+    // Admin-only collection for app-wide settings
+    match /app_settings/{setting} {
+      allow read: if isAuthenticated(); 
+      allow write: if isAdmin();
+    }
+    
+    // Allow admins to read any document
+    match /{document=**} {
+      allow read: if isAdmin();
+    }
+  }
+} 
